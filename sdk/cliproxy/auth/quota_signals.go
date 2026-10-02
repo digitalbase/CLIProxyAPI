@@ -1,8 +1,10 @@
 package auth
 
 import (
+	"math"
 	"net/http"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -224,4 +226,57 @@ func mergeQuotaObservation(target, source QuotaState) QuotaState {
 	target.ObservedAt = source.ObservedAt
 	target.Signals = source.Clone().Signals
 	return target
+}
+
+// quotaResetAt returns the earliest future quota-window reset tracked for an auth.
+// Signals are provider-specific, so this accepts both timestamp and reset-after
+// forms while ignoring cooldown-only fields such as Retry-After.
+func quotaResetAt(auth *Auth, now time.Time) time.Time {
+	if auth == nil || len(auth.Quota.Signals) == 0 {
+		return time.Time{}
+	}
+	if now.IsZero() {
+		now = time.Now()
+	}
+	observedAt := auth.Quota.ObservedAt
+	if observedAt.IsZero() {
+		observedAt = now
+	}
+	var earliest time.Time
+	for key, raw := range auth.Quota.Signals {
+		lower := strings.ToLower(strings.TrimSpace(key))
+		if lower == "retry-after" || strings.Contains(lower, "used-percent") || strings.Contains(lower, "limit-reached") {
+			continue
+		}
+		var reset time.Time
+		switch {
+		case strings.Contains(lower, "reset-at"), strings.Contains(lower, "reset_at"),
+			strings.HasSuffix(lower, "_reset"), strings.HasSuffix(lower, "-reset"):
+			reset = parseQuotaResetTimestamp(strings.TrimSpace(raw))
+		case strings.Contains(lower, "reset-after-seconds"):
+			if seconds, err := strconv.ParseFloat(strings.TrimSpace(raw), 64); err == nil && seconds >= 0 {
+				reset = observedAt.Add(time.Duration(seconds * float64(time.Second)))
+			}
+		}
+		if reset.IsZero() || !reset.After(now) || (!earliest.IsZero() && !reset.Before(earliest)) {
+			continue
+		}
+		earliest = reset
+	}
+	return earliest
+}
+
+func parseQuotaResetTimestamp(raw string) time.Time {
+	if parsed, err := time.Parse(time.RFC3339Nano, raw); err == nil {
+		return parsed
+	}
+	value, err := strconv.ParseFloat(raw, 64)
+	if err != nil || value <= 0 {
+		return time.Time{}
+	}
+	if value > 1e12 {
+		value /= 1000
+	}
+	seconds, fraction := math.Modf(value)
+	return time.Unix(int64(seconds), int64(fraction*float64(time.Second)))
 }

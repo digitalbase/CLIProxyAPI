@@ -71,6 +71,13 @@ func weightedSelectorStateModel(ctx context.Context, availabilityModel string) s
 // rolling-window subscription caps (e.g. chat message limits).
 type FillFirstSelector struct{}
 
+// QuotaResetAwareSelector prefers the eligible auth whose tracked quota window
+// resets soonest. When no eligible auth has a known future reset, it falls back
+// to round-robin selection.
+type QuotaResetAwareSelector struct {
+	fallback RoundRobinSelector
+}
+
 type blockReason int
 
 const (
@@ -818,6 +825,35 @@ func (s *FillFirstSelector) Pick(ctx context.Context, provider, model string, op
 	}
 	available = preferCodexWebsocketAuths(ctx, provider, available)
 	return available[0], nil
+}
+
+// Pick selects the eligible auth with the soonest tracked quota reset.
+func (s *QuotaResetAwareSelector) Pick(ctx context.Context, provider, model string, opts cliproxyexecutor.Options, auths []*Auth) (*Auth, error) {
+	_ = opts
+	now := time.Now()
+	available, err := getSelectorAvailableAuths(ctx, auths, provider, model, now)
+	if err != nil {
+		return nil, err
+	}
+	available = preferCodexWebsocketAuths(ctx, provider, available)
+	if picked := pickSoonestQuotaResetAuth(available, now); picked != nil {
+		return picked, nil
+	}
+	return s.fallback.Pick(ctx, provider, model, opts, auths)
+}
+
+func pickSoonestQuotaResetAuth(auths []*Auth, now time.Time) *Auth {
+	var picked *Auth
+	var pickedAt time.Time
+	for _, auth := range auths {
+		resetAt := quotaResetAt(auth, now)
+		if resetAt.IsZero() || (picked != nil && (resetAt.After(pickedAt) || (resetAt.Equal(pickedAt) && auth.ID >= picked.ID))) {
+			continue
+		}
+		picked = auth
+		pickedAt = resetAt
+	}
+	return picked
 }
 
 func isAuthBlockedForModel(auth *Auth, model string, now time.Time) (bool, blockReason, time.Time) {

@@ -64,6 +64,37 @@ func TestRoundRobinSelectorPick_CyclesDeterministic(t *testing.T) {
 	}
 }
 
+func TestQuotaResetAwareSelectorPick_PrefersSoonestKnownReset(t *testing.T) {
+	selector := &QuotaResetAwareSelector{}
+	now := time.Now()
+	auths := []*Auth{
+		{ID: "later", Quota: QuotaState{ObservedAt: now, Signals: map[string]string{"daily_quota_reset_at": now.Add(10 * time.Minute).Format(time.RFC3339)}}},
+		{ID: "soon", Quota: QuotaState{ObservedAt: now, Signals: map[string]string{"daily_quota_reset_at": now.Add(2 * time.Minute).Format(time.RFC3339)}}},
+	}
+
+	got, err := selector.Pick(context.Background(), "devin", "", cliproxyexecutor.Options{}, auths)
+	if err != nil {
+		t.Fatalf("Pick() error = %v", err)
+	}
+	if got == nil || got.ID != "soon" {
+		t.Fatalf("Pick() auth = %v, want soon", got)
+	}
+}
+
+func TestQuotaResetAwareSelectorPick_FallsBackToRoundRobinWithoutReset(t *testing.T) {
+	selector := &QuotaResetAwareSelector{}
+	auths := []*Auth{{ID: "a"}, {ID: "b"}}
+	for _, want := range []string{"a", "b", "a"} {
+		got, err := selector.Pick(context.Background(), "gemini", "", cliproxyexecutor.Options{}, auths)
+		if err != nil {
+			t.Fatalf("Pick() error = %v", err)
+		}
+		if got == nil || got.ID != want {
+			t.Fatalf("Pick() auth = %v, want %s", got, want)
+		}
+	}
+}
+
 func TestWeightedRoundRobinSelectorPick_DistributesAndSkipsNonPositiveWeights(t *testing.T) {
 	t.Parallel()
 
