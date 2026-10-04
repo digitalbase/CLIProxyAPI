@@ -26,7 +26,11 @@ RUN mkdir /CLIProxyAPI
 
 COPY --from=builder ./app/CLIProxyAPI /CLIProxyAPI/CLIProxyAPI
 
-COPY --from=builder /app/static /CLIProxyAPI/static
+COPY --from=builder /app/static /opt/cliproxyapi/static
+
+# Keep the fork UI independent of mounted configuration and upstream releases.
+ENV MANAGEMENT_STATIC_PATH=/opt/cliproxyapi/static
+ENV MANAGEMENT_DISABLE_AUTO_UPDATE=true
 
 COPY config.example.yaml /CLIProxyAPI/config.example.yaml
 

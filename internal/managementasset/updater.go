@@ -117,6 +117,9 @@ func autoUpdateSkipReason(cfg *config.Config) (string, bool) {
 	if cfg.RemoteManagement.DisableAutoUpdatePanel {
 		return "disable-auto-update-panel is enabled", true
 	}
+	if strings.EqualFold(strings.TrimSpace(os.Getenv("MANAGEMENT_DISABLE_AUTO_UPDATE")), "true") {
+		return "MANAGEMENT_DISABLE_AUTO_UPDATE is enabled", true
+	}
 	return "", false
 }
 

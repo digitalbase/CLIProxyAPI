@@ -10,12 +10,11 @@ Tags include `customizations`, `sha-<full-commit>`, and the pushed release tag.
 
 The image includes the fork's management UI. Its commit is pinned in
 `.github/workflows/ghcr.yml`; update that reference when shipping UI changes.
-To retain the bundled UI, include this in the mounted configuration:
-
-```yaml
-management:
-  disable-auto-update-panel: true
-```
+The image serves its bundled UI from `/opt/cliproxyapi/static` and disables
+automatic upstream UI downloads, regardless of the mounted configuration.
+Pull and recreate the container to receive UI updates. To opt into upstream
+UI updates, set `MANAGEMENT_DISABLE_AUTO_UPDATE=false` and enable updates in
+your configuration.
 
 Run with your configuration and credentials mounted:
 

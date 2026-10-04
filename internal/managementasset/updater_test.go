@@ -66,6 +66,7 @@ func TestFetchLatestAssetOmitsAuthorizationWithoutToken(t *testing.T) {
 }
 
 func TestAutoUpdateSkipReason(t *testing.T) {
+	t.Setenv("MANAGEMENT_DISABLE_AUTO_UPDATE", "")
 	tests := []struct {
 		name       string
 		cfg        *config.Config
@@ -117,5 +118,13 @@ func TestAutoUpdateSkipReason(t *testing.T) {
 				t.Fatalf("autoUpdateSkipReason() = (%q, %t), want (%q, %t)", gotReason, gotSkip, tt.wantReason, tt.wantSkip)
 			}
 		})
+	}
+}
+
+func TestAutoUpdateDisabledByImage(t *testing.T) {
+	t.Setenv("MANAGEMENT_DISABLE_AUTO_UPDATE", "true")
+	reason, skip := autoUpdateSkipReason(&config.Config{})
+	if !skip || reason != "MANAGEMENT_DISABLE_AUTO_UPDATE is enabled" {
+		t.Fatalf("autoUpdateSkipReason() = (%q, %t), want image updates disabled", reason, skip)
 	}
 }

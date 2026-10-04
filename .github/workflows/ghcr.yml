@@ -87,3 +87,27 @@ jobs:
             BUILD_DATE=${{ steps.timestamp.outputs.value }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      - name: Verify published management UI
+        run: |
+          image="ghcr.io/digitalbase/cliproxyapi:sha-${GITHUB_SHA}"
+          docker pull "$image"
+          cat > /tmp/verify-config.yaml <<'EOF'
+          port: 8317
+          api-keys: ["ci-smoke-test-key"]
+          remote-management:
+            allow-remote: true
+            secret-key: "ci-smoke-test-management"
+          EOF
+          docker run -d --name verify-ui -p 18317:8317 \
+            -v /tmp/verify-config.yaml:/CLIProxyAPI/config.yaml \
+            "$image"
+          trap 'docker logs verify-ui; docker rm -f verify-ui' EXIT
+          for attempt in $(seq 1 30); do
+            if curl --fail --silent http://localhost:18317/management.html -o /tmp/served-management.html; then
+              break
+            fi
+            sleep 1
+          done
+          cmp management-ui/dist/index.html /tmp/served-management.html
+          test "$(docker exec verify-ui printenv MANAGEMENT_DISABLE_AUTO_UPDATE)" = true
