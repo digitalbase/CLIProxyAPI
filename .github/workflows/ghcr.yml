@@ -93,11 +93,14 @@ jobs:
           image="ghcr.io/digitalbase/cliproxyapi:sha-${GITHUB_SHA}"
           docker pull "$image"
           cat > /tmp/verify-config.yaml <<'EOF'
-          port: 8317
-          api-keys: ["ci-smoke-test-key"]
-          remote-management:
+          config-version: 8
+          server:
+            port: 8317
+          management:
             allow-remote: true
             secret-key: "ci-smoke-test-management"
+          access:
+            api-keys: ["ci-smoke-test-key"]
           EOF
           docker run -d --name verify-ui -p 18317:8317 \
             -v /tmp/verify-config.yaml:/CLIProxyAPI/config.yaml \
