@@ -10,6 +10,8 @@ RUN go mod download
 
 COPY . .
 
+RUN mkdir -p static
+
 ARG VERSION=dev
 ARG COMMIT=none
 ARG BUILD_DATE=unknown
@@ -23,6 +25,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends tzdata ca-certi
 RUN mkdir /CLIProxyAPI
 
 COPY --from=builder ./app/CLIProxyAPI /CLIProxyAPI/CLIProxyAPI
+
+COPY --from=builder /app/static /opt/cliproxyapi/static
+
+# Keep the fork UI independent of mounted configuration and upstream releases.
+ENV MANAGEMENT_STATIC_PATH=/opt/cliproxyapi/static
+ENV MANAGEMENT_DISABLE_AUTO_UPDATE=true
 
 COPY config.example.yaml /CLIProxyAPI/config.example.yaml
 
