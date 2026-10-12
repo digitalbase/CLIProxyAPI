@@ -9,6 +9,8 @@ on:
 
 jobs:
   ensure-no-translator-changes:
+    # Upstream contribution policy must not block synchronization PRs in forks.
+    if: github.repository == 'router-for-me/CLIProxyAPI'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
