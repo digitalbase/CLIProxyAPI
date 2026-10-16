@@ -22,6 +22,7 @@ const (
 	schedulerStrategyRoundRobin         schedulerStrategy = 1
 	schedulerStrategyFillFirst          schedulerStrategy = 2
 	schedulerStrategyWeightedRoundRobin schedulerStrategy = 3
+	schedulerStrategyQuotaResetAware    schedulerStrategy = 4
 )
 
 // scheduledState describes how an auth currently participates in a model shard.
@@ -170,6 +171,8 @@ func selectorStrategy(selector Selector) schedulerStrategy {
 		return schedulerStrategyFillFirst
 	case *WeightedRoundRobinSelector:
 		return schedulerStrategyWeightedRoundRobin
+	case *QuotaResetAwareSelector:
+		return schedulerStrategyQuotaResetAware
 	case nil, *RoundRobinSelector:
 		return schedulerStrategyRoundRobin
 	default:
@@ -529,6 +532,21 @@ func (s *authScheduler) pickMixedWithStrategy(ctx context.Context, providers []s
 			}
 		}
 		return nil, "", s.mixedUnavailableErrorLocked(normalized, model, predicate)
+	}
+	if strategy == schedulerStrategyQuotaResetAware {
+		entries := make([]*scheduledAuth, 0)
+		for _, shard := range candidateShards {
+			if shard == nil {
+				continue
+			}
+			bucket := shard.readyByPriority[bestPriority]
+			if bucket != nil {
+				entries = append(entries, bucket.all.flat...)
+			}
+		}
+		if picked := pickSoonestQuotaResetScheduled(entries, predicate, now); picked != nil && picked.meta != nil {
+			return picked.auth, picked.meta.providerKey, nil
+		}
 	}
 
 	cursorKey := strings.Join(normalized, ",") + ":" + modelKey
@@ -1378,6 +1396,11 @@ func (m *modelScheduler) pickReadyAtPriorityLocked(preferWebsocket bool, priorit
 		picked = view.pickFirst(predicate)
 	case schedulerStrategyWeightedRoundRobin:
 		picked = view.pickWeighted(predicate)
+	case schedulerStrategyQuotaResetAware:
+		picked = view.pickSoonestQuotaReset(predicate, time.Now())
+		if picked == nil {
+			picked = view.pickRoundRobin(predicate)
+		}
 	default:
 		picked = view.pickRoundRobin(predicate)
 	}
@@ -1385,6 +1408,48 @@ func (m *modelScheduler) pickReadyAtPriorityLocked(preferWebsocket bool, priorit
 		return nil
 	}
 	return picked.auth
+}
+
+func (v *readyView) pickSoonestQuotaReset(predicate func(*scheduledAuth) bool, now time.Time) *scheduledAuth {
+	if v == nil {
+		return nil
+	}
+	var picked *scheduledAuth
+	var pickedAt time.Time
+	for _, entry := range v.flat {
+		if entry == nil || entry.auth == nil || (predicate != nil && !predicate(entry)) {
+			continue
+		}
+		resetAt := quotaResetAt(entry.auth, now)
+		if resetAt.IsZero() || (picked != nil && (resetAt.After(pickedAt) || (resetAt.Equal(pickedAt) && entry.auth.ID >= picked.auth.ID))) {
+			continue
+		}
+		picked = entry
+		pickedAt = resetAt
+	}
+	return picked
+}
+
+func pickSoonestQuotaResetScheduled(entries []*scheduledAuth, predicate func(*scheduledAuth) bool, now time.Time) *scheduledAuth {
+	var picked *scheduledAuth
+	for _, entry := range entries {
+		if entry == nil || entry.auth == nil || (predicate != nil && !predicate(entry)) {
+			continue
+		}
+		resetAt := quotaResetAt(entry.auth, now)
+		if resetAt.IsZero() {
+			continue
+		}
+		if picked == nil {
+			picked = entry
+			continue
+		}
+		pickedAt := quotaResetAt(picked.auth, now)
+		if resetAt.Before(pickedAt) || (resetAt.Equal(pickedAt) && entry.auth.ID < picked.auth.ID) {
+			picked = entry
+		}
+	}
+	return picked
 }
 
 func (m *modelScheduler) readyCountAtPriorityLocked(preferWebsocket bool, priority int, predicate func(*scheduledAuth) bool) int {
