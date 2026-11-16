@@ -1,11 +1,11 @@
 package api
 
 import (
-	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 
+	"github.com/MoeForge/moego/json"
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/home"
@@ -74,7 +74,9 @@ func TestModelsApplyPatchClientConfigAndReload(t *testing.T) {
 						for _, entry := range response.Models {
 							var want any
 							switch entry["slug"] {
-							case "gpt-5.5", "config-patch-synthetic":
+							case "gpt-5.5":
+								want = "freeform"
+							case "config-patch-synthetic":
 								if tc.want {
 									want = "freeform"
 								}
