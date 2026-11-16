@@ -1,8 +1,8 @@
 package auth
 
 import (
-	"math"
 	"maps"
+	"math"
 	"net/http"
 	"sort"
 	"strconv"
