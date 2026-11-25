@@ -105,6 +105,16 @@ type Params struct {
 // toolUseIDCounter provides a process-wide unique counter for tool use identifiers.
 var toolUseIDCounter uint64
 
+// claudeResponseIDCounter provides a process-wide unique counter for synthesized Claude message IDs.
+var claudeResponseIDCounter uint64
+
+func resolveAntigravityClaudeMessageID(rawID string) string {
+	if trimmed := strings.TrimSpace(rawID); trimmed != "" {
+		return trimmed
+	}
+	return fmt.Sprintf("msg_%x_%d", time.Now().UnixNano(), atomic.AddUint64(&claudeResponseIDCounter, 1))
+}
+
 const antigravityMalformedFunctionCallErrorPayload = `{"type":"error","error":{"type":"api_error","message":"Gemini response finished with MALFORMED_FUNCTION_CALL"}}`
 
 func isAntigravityMalformedFunctionCall(finishReason string, hasVisibleOutput bool) bool {
@@ -194,6 +204,11 @@ func ConvertAntigravityResponseToClaude(ctx context.Context, _ string, originalR
 				return [][]byte{output}
 			}
 			return [][]byte{}
+		}
+		if params.WebSearchStreamMode && !params.HasWebSearchTool && params.WebSearchTextBuffer.Len() > 0 {
+			appendBufferedWebSearchTextBlock(params, func(event, payload string) {
+				output = translatorcommon.AppendSSEEventString(output, event, payload, 3)
+			})
 		}
 		if params.HasFirstResponse && !params.HasContent {
 			output = translatorcommon.AppendSSEEventString(output, "content_block_start", fmt.Sprintf(`{"type":"content_block_start","index":%d,"content_block":{"type":"text","text":""}}`, params.ResponseIndex), 3)
@@ -324,7 +339,7 @@ func ConvertAntigravityResponseToClaude(ctx context.Context, _ string, originalR
 	if !params.HasFirstResponse {
 		// Create the initial message structure with default values according to Claude Code API specification
 		// This follows the Claude Code API specification for streaming message initialization
-		messageStartDoc := ojson.NewDoc([]byte(`{"type": "message_start", "message": {"id": "msg_1nZdL29xx5MUA1yADyHTEsnR8uuvGzszyY", "type": "message", "role": "assistant", "content": [], "model": "claude-3-5-sonnet-20241022", "stop_reason": null, "stop_sequence": null, "usage": {"input_tokens": 0, "output_tokens": 0}}}`))
+		messageStartDoc := ojson.NewDoc([]byte(`{"type": "message_start", "message": {"id": "", "type": "message", "role": "assistant", "content": [], "model": "claude-3-5-sonnet-20241022", "stop_reason": null, "stop_sequence": null, "usage": {"input_tokens": 0, "output_tokens": 0}}}`))
 
 		// Use cpaUsageMetadata within the message_start event for Claude.
 		if promptTokenCount := ojson.GetBytesNoCopy(rawJSON, "response.cpaUsageMetadata.promptTokenCount"); promptTokenCount.Exists() {
@@ -338,9 +353,7 @@ func ConvertAntigravityResponseToClaude(ctx context.Context, _ string, originalR
 		if modelVersionResult := ojson.GetBytesNoCopy(rawJSON, "response.modelVersion"); modelVersionResult.Exists() {
 			_ = messageStartDoc.Set("message.model", modelVersionResult.String())
 		}
-		if responseIDResult := ojson.GetBytesNoCopy(rawJSON, "response.responseId"); responseIDResult.Exists() {
-			_ = messageStartDoc.Set("message.id", responseIDResult.String())
-		}
+		_ = messageStartDoc.Set("message.id", resolveAntigravityClaudeMessageID(ojson.GetBytesNoCopy(rawJSON, "response.responseId").String()))
 		appendEvent("message_start", messageStartDoc.String())
 
 		params.HasFirstResponse = true
@@ -464,8 +477,8 @@ func ConvertAntigravityResponseToClaude(ctx context.Context, _ string, originalR
 				fcName := util.RestoreSanitizedToolName(params.ToolNameMap, functionCallResult.Get("name").String())
 				isContinuation := params.ResponseType == 3 && fcName == "" && params.CurrentToolName != ""
 				if !isContinuation && !isAntigravityNonEmptyFunctionCall(functionCallResult) {
-					if hasThoughtSignature {
-						appendPartSignature(toolSignature, geminiClaudeCarrierPrevious, params.LastSemanticKind)
+					if toolSignature != "" {
+						appendPartSignature(toolSignature, geminiClaudeCarrierNext, geminiClaudeCarrierAny)
 					}
 					continue
 				}
@@ -563,9 +576,9 @@ func ConvertAntigravityResponseToClaude(ctx context.Context, _ string, originalR
 		}
 	}
 
-	if finishReasonResult := ojson.GetBytesNoCopy(rawJSON, "response.candidates.0.finishReason"); finishReasonResult.Exists() {
-		params.HasFinishReason = true
+	if finishReasonResult := ojson.GetBytesNoCopy(rawJSON, "response.candidates.0.finishReason"); finishReasonResult.Type == ojson.String {
 		if finishReason := strings.TrimSpace(finishReasonResult.String()); finishReason != "" {
+			params.HasFinishReason = true
 			params.FinishReason = strings.Clone(finishReason)
 			flushPendingToolInput()
 		}
@@ -750,7 +763,7 @@ func resolveAntigravityClaudeStopReason(finishReason string, hasToolUse bool) st
 //
 // Returns:
 //   - []byte: A Claude-compatible JSON response.
-func ConvertAntigravityResponseToClaudeNonStream(_ context.Context, _ string, originalRequestRawJSON, requestRawJSON, rawJSON []byte, _ *any) []byte {
+func ConvertAntigravityResponseToClaudeNonStream(ctx context.Context, _ string, originalRequestRawJSON, requestRawJSON, rawJSON []byte, _ *any) []byte {
 	toolNameMap := util.DisambiguatedToolNameMap(originalRequestRawJSON)
 	modelName := ojson.GetBytesNoCopy(requestRawJSON, "model").String()
 
@@ -773,7 +786,7 @@ func ConvertAntigravityResponseToClaudeNonStream(_ context.Context, _ string, or
 	}
 
 	responseDoc := ojson.NewDoc([]byte(`{"id":"","type":"message","role":"assistant","model":"","content":[],"stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":0,"output_tokens":0}}`))
-	_ = responseDoc.Set("id", root.Get("response.responseId").String())
+	_ = responseDoc.Set("id", resolveAntigravityClaudeMessageID(root.Get("response.responseId").String()))
 	_ = responseDoc.Set("model", root.Get("response.modelVersion").String())
 	_ = responseDoc.Set("usage.input_tokens", inputTokens)
 	_ = responseDoc.Set("usage.output_tokens", outputTokens)
@@ -808,6 +821,7 @@ func ConvertAntigravityResponseToClaudeNonStream(_ context.Context, _ string, or
 	hasVisibleOutput := false
 	hasSemanticContent := false
 	lastSemanticKind := geminiClaudeCarrierAny
+	pendingThinkingText := ""
 
 	flushText := func() {
 		if textBuilder.Len() == 0 {
@@ -828,6 +842,10 @@ func ConvertAntigravityResponseToClaudeNonStream(_ context.Context, _ string, or
 		if thinkingSignature != "" {
 			sigValue := formatGeminiClaudeCarrierValue(modelName, thinkingSignature, thinkingSignatureDirection, thinkingSignatureTargetKind)
 			_ = blockDoc.Set("signature", sigValue)
+			cache.CacheSignatureBestEffort(ctx, modelName, thinkingBuilder.String(), thinkingSignature)
+			pendingThinkingText = ""
+		} else if thinkingBuilder.Len() > 0 {
+			pendingThinkingText = thinkingBuilder.String()
 		}
 		blocks = append(blocks, blockDoc.Bytes())
 		thinkingBuilder.Reset()
@@ -857,6 +875,7 @@ func ConvertAntigravityResponseToClaudeNonStream(_ context.Context, _ string, or
 			}
 
 			if functionCall := part.Get("functionCall"); functionCall.Exists() {
+				pendingThinkingText = ""
 				if !isAntigravityNonEmptyFunctionCall(functionCall) {
 					if signature != "" {
 						appendSignatureCarrier(signature, geminiClaudeCarrierNext, geminiClaudeCarrierAny)
@@ -918,7 +937,12 @@ func ConvertAntigravityResponseToClaudeNonStream(_ context.Context, _ string, or
 						thinkingSignatureTargetKind = geminiClaudeCarrierText
 						flushThinking()
 					} else if hasSemanticContent && lastSemanticKind == geminiClaudeCarrierText {
-						cache.CacheSignatureBestEffort(context.Background(), modelName, "", signature)
+						if cache.GetModelGroup(modelName) == "claude" {
+							cache.CacheSignatureBestEffort(ctx, modelName, pendingThinkingText, signature)
+							pendingThinkingText = ""
+						} else {
+							cache.CacheSignatureBestEffort(ctx, modelName, "", signature)
+						}
 					} else if hasSemanticContent {
 						appendSignatureCarrier(signature, geminiClaudeCarrierPrevious, lastSemanticKind)
 					} else {
@@ -942,7 +966,12 @@ func ConvertAntigravityResponseToClaudeNonStream(_ context.Context, _ string, or
 						appendSignatureCarrier(signature, geminiClaudeCarrierNext, geminiClaudeCarrierText)
 						visibleSignatureCarrier = true
 					} else if hasSemanticContent && lastSemanticKind == geminiClaudeCarrierText {
-						cache.CacheSignatureBestEffort(context.Background(), modelName, "", signature)
+						if cache.GetModelGroup(modelName) == "claude" {
+							cache.CacheSignatureBestEffort(ctx, modelName, pendingThinkingText, signature)
+							pendingThinkingText = ""
+						} else {
+							cache.CacheSignatureBestEffort(ctx, modelName, "", signature)
+						}
 					} else if hasSemanticContent {
 						appendSignatureCarrier(signature, geminiClaudeCarrierPrevious, lastSemanticKind)
 					} else {
@@ -952,6 +981,9 @@ func ConvertAntigravityResponseToClaudeNonStream(_ context.Context, _ string, or
 			}
 			if text.Exists() && text.String() != "" {
 				flushThinking()
+				if !isThought {
+					pendingThinkingText = ""
+				}
 				textBuilder.WriteString(text.String())
 				if strings.TrimSpace(text.String()) != "" {
 					hasVisibleOutput = true

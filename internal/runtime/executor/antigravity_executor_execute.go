@@ -5,13 +5,13 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"fmt"
 	"io"
 	"net/http"
 	"strings"
 
 	"github.com/MoeForge/moego/json"
 	"github.com/MoeForge/moego/ojson"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/cache"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/clienterror"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor/helps"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/thinking"
@@ -70,6 +70,7 @@ func (e *AntigravityExecutor) Execute(ctx context.Context, auth *cliproxyauth.Au
 		auth = prepared.auth
 		reporter.UpdateAccessTokenFingerprint(auth)
 	}
+	ctx = cache.WithSignatureCacheScope(ctx, antigravitySignatureCacheScope(auth))
 	originalPayload, translated := prepared.originalPayload, prepared.translated
 	req.Payload = originalPayload
 	selection := prepared.model
@@ -227,26 +228,10 @@ func (e *AntigravityExecutor) executeCompaction(ctx context.Context, auth *clipr
 		return resp, errSummary
 	}
 
-	summaryText, errExtract := helps.ExtractAntigravitySummaryText(summaryResp.Payload)
-	if errExtract != nil {
-		return resp, fmt.Errorf("extract summary: %w", errExtract)
+	respBytes, errBuild := helps.BuildResponsesCompactionResponseFromSummary(baseModel, summaryResp.Payload)
+	if errBuild != nil {
+		return resp, statusErr{code: http.StatusBadGateway, msg: errBuild.Error()}
 	}
-	capsule, errSeal := helps.SealAntigravityCompaction(summaryText, baseModel)
-	if errSeal != nil {
-		return resp, fmt.Errorf("seal compaction capsule: %w", errSeal)
-	}
-
-	inputTokens := int(ojson.GetBytesNoCopy(summaryResp.Payload, "usage.input_tokens").Int())
-	outputTokens := int(ojson.GetBytesNoCopy(summaryResp.Payload, "usage.output_tokens").Int())
-	totalTokens := int(ojson.GetBytesNoCopy(summaryResp.Payload, "usage.total_tokens").Int())
-	if totalTokens == 0 && inputTokens == 0 {
-		usage := helps.ParseOpenAIUsage(summaryResp.Payload)
-		inputTokens = int(usage.InputTokens)
-		outputTokens = int(usage.OutputTokens)
-		totalTokens = int(usage.TotalTokens)
-	}
-
-	respBytes := helps.BuildAntigravityCompactionResponse(baseModel, capsule, inputTokens, outputTokens, totalTokens)
 	return cliproxyexecutor.Response{
 		Payload: respBytes,
 		Headers: summaryResp.Headers,
@@ -277,6 +262,7 @@ func (e *AntigravityExecutor) executeClaudeNonStream(ctx context.Context, auth *
 		auth = prepared.auth
 		reporter.UpdateAccessTokenFingerprint(auth)
 	}
+	ctx = cache.WithSignatureCacheScope(ctx, antigravitySignatureCacheScope(auth))
 	originalPayload, translated := prepared.originalPayload, prepared.translated
 	req.Payload = originalPayload
 	selection := prepared.model
@@ -422,6 +408,18 @@ func (e *AntigravityExecutor) executeClaudeNonStream(ctx context.Context, auth *
 		helps.RecordAPIResponseError(ctx, e.cfg, filterErr)
 		reporter.PublishFailure(ctx, filterErr)
 		return resp, filterErr
+	}
+	if len(rawPayloads) == 0 {
+		if errCtx := ctx.Err(); errCtx != nil {
+			helps.RecordAPIResponseError(ctx, e.cfg, errCtx)
+			reporter.PublishFailure(ctx, errCtx)
+			err = errCtx
+			return cliproxyexecutor.Response{}, err
+		}
+		err = newGeminiZeroOutputStatusErr(helps.GeminiZeroOutputErrorMessage(responseFormat, ""))
+		helps.RecordAPIResponseError(ctx, e.cfg, err)
+		reporter.PublishFailure(ctx, err)
+		return cliproxyexecutor.Response{}, err
 	}
 	aggregatedPayload := e.convertStreamChunksToNonStream(rawPayloads)
 	reporter.ObserveResponseModel(aggregatedPayload)
