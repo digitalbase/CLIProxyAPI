@@ -393,10 +393,6 @@ func (e *AntigravityExecutor) ExecuteStream(ctx context.Context, auth *cliproxya
 			}
 			return
 		}
-		if scanner.Err() == nil && ctx.Err() == nil && !sawUpstreamJSON {
-			failZeroOutput("")
-			return
-		}
 		if scanner.Err() == nil && ctx.Err() == nil && zeroOutputGuard.HasAbnormalFinish() {
 			_, action, finishReason := zeroOutputGuard.Finalize()
 			if action == helps.GeminiZeroOutputEmitErrorThenFail {
@@ -417,6 +413,10 @@ func (e *AntigravityExecutor) ExecuteStream(ctx context.Context, auth *cliproxya
 			return
 		}
 		if helps.EndApplyPatchStream(ctx, param, reporter, out, statusErr{code: http.StatusBadGateway, msg: helps.ApplyPatchUpstreamErrorMessage}) {
+			return
+		}
+		if scanner.Err() == nil && ctx.Err() == nil && !sawUpstreamJSON {
+			failZeroOutput("")
 			return
 		}
 		if helps.StopTranslatedClaudeStream(ctx, &translatedClaudeErr, reporter, &streamUsage, out) {
